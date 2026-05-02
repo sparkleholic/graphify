@@ -5,7 +5,7 @@ import pytest
 from graphify.extract import (
     extract_java, extract_c, extract_cpp, extract_ruby,
     extract_csharp, extract_kotlin, extract_scala, extract_php,
-    extract_swift, extract_go, extract_julia,
+    extract_swift, extract_go, extract_julia, extract,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -102,6 +102,77 @@ def test_cpp_finds_methods():
 def test_cpp_finds_includes():
     r = extract_cpp(FIXTURES / "sample.cpp")
     assert "imports" in _relations(r)
+
+
+def test_cpp_header_dispatch_preserves_nested_namespace_class(tmp_path):
+    header = tmp_path / "client.h"
+    header.write_text("""
+namespace acme {
+namespace devices {
+class DeviceClientId {
+public:
+    static int value();
+};
+}  // namespace devices
+}  // namespace acme
+""")
+
+    r = extract([header], cache_root=tmp_path)
+    labels = _labels(r)
+
+    assert "acme::devices::DeviceClientId" in labels
+    assert "acme()" not in labels
+    assert "devices()" not in labels
+
+
+@pytest.mark.parametrize("suffix", [".h", ".hpp", ".cpp"])
+def test_cpp_extract_preserves_qualified_namespace_class(tmp_path, suffix):
+    source = tmp_path / f"qualified{suffix}"
+    source.write_text("""
+namespace acme::devices {
+class QualifiedClientId {
+public:
+    static int value();
+};
+}  // namespace acme::devices
+""")
+
+    r = extract([source], cache_root=tmp_path)
+    labels = _labels(r)
+
+    assert "acme::devices::QualifiedClientId" in labels
+    assert "acme()" not in labels
+    assert "devices()" not in labels
+
+
+def test_c_header_dispatch_still_uses_c_extractor(tmp_path):
+    header = tmp_path / "legacy.h"
+    header.write_text("""
+#ifndef LEGACY_H
+#define LEGACY_H
+int legacy_value(void);
+#endif
+""")
+
+    r = extract([header], cache_root=tmp_path)
+
+    assert "error" not in r
+    assert not any("::" in label for label in _labels(r))
+
+
+def test_cpp_preserves_namespace_and_class_scope_for_out_of_class_method(tmp_path):
+    source = tmp_path / "client.cpp"
+    source.write_text("""
+namespace acme::devices {
+int DeviceClientId::value() {
+    return 42;
+}
+}  // namespace acme::devices
+""")
+
+    r = extract([source], cache_root=tmp_path)
+
+    assert "acme::devices::DeviceClientId::value()" in _labels(r)
 
 
 # ── Ruby ─────────────────────────────────────────────────────────────────────

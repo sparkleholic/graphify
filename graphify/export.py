@@ -25,6 +25,28 @@ COMMUNITY_COLORS = [
 MAX_NODES_FOR_VIZ = 5_000
 
 
+def _note_file_stem(label: str) -> str:
+    """Return a readable, wikilink-safe Markdown note filename stem."""
+    readable = str(label).replace("::", " - ")
+    cleaned = re.sub(
+        r'[\\/*?:"<>|#^[\]]',
+        "",
+        readable.replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
+    ).strip()
+    # Strip trailing .md/.mdx/.markdown so "CLAUDE.md" doesn't become "CLAUDE.md.md"
+    cleaned = re.sub(r"\.(md|mdx|markdown)$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned or "unnamed"
+
+
+def _cluster_note_title(cid: int, label: str) -> str:
+    return f"Graph Cluster {cid}: {label}"
+
+
+def _cluster_note_file_stem(cid: int, label: str) -> str:
+    return f"_GRAPH_CLUSTER_{cid}_{_note_file_stem(label)}"
+
+
 def _html_styles() -> str:
     return """<style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -527,18 +549,10 @@ def to_obsidian(
 
     node_community = _node_community_map(communities)
 
-    # Map node_id → safe filename so wikilinks stay consistent.
-    # Deduplicate: if two nodes produce the same filename, append a numeric suffix.
-    def safe_name(label: str) -> str:
-        cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
-        # Strip trailing .md/.mdx/.markdown so "CLAUDE.md" doesn't become "CLAUDE.md.md"
-        cleaned = re.sub(r"\.(md|mdx|markdown)$", "", cleaned, flags=re.IGNORECASE)
-        return cleaned or "unnamed"
-
     node_filename: dict[str, str] = {}
     seen_names: dict[str, int] = {}
     for node_id, data in G.nodes(data=True):
-        base = safe_name(data.get("label", node_id))
+        base = _note_file_stem(data.get("label", node_id))
         if base in seen_names:
             seen_names[base] += 1
             node_filename[node_id] = f"{base}_{seen_names[base]}"
@@ -617,7 +631,7 @@ def to_obsidian(
         fname = node_filename[node_id] + ".md"
         (out / fname).write_text("\n".join(lines), encoding="utf-8")  # nosec
 
-    # Write one _COMMUNITY_name.md overview note per community
+    # Write one graph-cluster overview note per community.
     # Build inter-community edge counts for "Connections to other communities"
     inter_community_edges: dict[int, dict[int, int]] = {}
     for cid in communities:
@@ -660,7 +674,7 @@ def to_obsidian(
         lines.append(f"members: {n_members}")
         lines.append("---")
         lines.append("")
-        lines.append(f"# {community_name}")
+        lines.append(f"# {_cluster_note_title(cid, community_name)}")
         lines.append("")
 
         # Cohesion + member count summary
@@ -709,8 +723,10 @@ def to_obsidian(
                     if community_labels and other_cid is not None
                     else f"Community {other_cid}"
                 )
-                other_safe = safe_name(other_name)
-                lines.append(f"- {edge_count} edge{'s' if edge_count != 1 else ''} to [[_COMMUNITY_{other_safe}]]")
+                lines.append(
+                    f"- {edge_count} edge{'s' if edge_count != 1 else ''} "
+                    f"to [[{_cluster_note_file_stem(other_cid, other_name)}]]"
+                )
             lines.append("")
 
         # Top bridge nodes - highest degree nodes that connect to other communities
@@ -730,8 +746,7 @@ def to_obsidian(
                     f"{'community' if reach == 1 else 'communities'}"
                 )
 
-        community_safe = safe_name(community_name)
-        fname = f"_COMMUNITY_{community_safe}.md"
+        fname = f"{_cluster_note_file_stem(cid, community_name)}.md"
         (out / fname).write_text("\n".join(lines), encoding="utf-8")  # nosec
         community_notes_written += 1
 
@@ -768,17 +783,12 @@ def to_canvas(
     # Obsidian canvas color codes (cycle through for communities)
     CANVAS_COLORS = ["1", "2", "3", "4", "5", "6"]  # red, orange, yellow, green, cyan, purple
 
-    def safe_name(label: str) -> str:
-        cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
-        cleaned = re.sub(r"\.(md|mdx|markdown)$", "", cleaned, flags=re.IGNORECASE)
-        return cleaned or "unnamed"
-
     # Build node_filenames if not provided (same dedup logic as to_obsidian)
     if node_filenames is None:
         node_filenames = {}
         seen_names: dict[str, int] = {}
         for node_id, data in G.nodes(data=True):
-            base = safe_name(data.get("label", node_id))
+            base = _note_file_stem(data.get("label", node_id))
             if base in seen_names:
                 seen_names[base] += 1
                 node_filenames[node_id] = f"{base}_{seen_names[base]}"
@@ -862,7 +872,7 @@ def to_canvas(
         canvas_nodes.append({
             "id": f"g{cid}",
             "type": "group",
-            "label": community_name,
+            "label": _cluster_note_title(cid, community_name),
             "x": gx,
             "y": gy,
             "width": gw,
@@ -877,7 +887,7 @@ def to_canvas(
             row = m_idx // 3
             nx_x = gx + 20 + col * (180 + 20)
             nx_y = gy + 80 + row * (60 + 20)
-            fname = node_filenames.get(node_id, safe_name(G.nodes[node_id].get("label", node_id)))
+            fname = node_filenames.get(node_id, _note_file_stem(G.nodes[node_id].get("label", node_id)))
             canvas_nodes.append({
                 "id": f"n_{node_id}",
                 "type": "file",

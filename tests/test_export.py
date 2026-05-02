@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 from graphify.build import build_from_json
 from graphify.cluster import cluster
-from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas
+from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -151,3 +151,79 @@ def test_to_canvas_file_paths_relative_to_vault():
         for node in file_nodes:
             assert "/" not in node["file"], f"file path should not contain '/': {node['file']}"
             assert node["file"].endswith(".md")
+
+
+def test_obsidian_qualified_cpp_names_stay_readable():
+    extraction = {
+        "nodes": [
+            {
+                "id": "client",
+                "label": "acme::devices::DeviceClientId",
+                "file_type": "code",
+                "source_file": "client.h",
+                "source_location": "L3",
+            }
+        ],
+        "edges": [],
+    }
+    G = build_from_json(extraction)
+    communities = {0: ["client"]}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp)
+        to_obsidian(G, communities, str(vault), community_labels={0: "Device Client"})
+        note = vault / "acme - devices - DeviceClientId.md"
+        assert note.exists()
+        assert "# acme::devices::DeviceClientId" in note.read_text()
+        cluster_notes = list(vault.glob("_GRAPH_CLUSTER_*.md"))
+        assert cluster_notes
+        assert "# Graph Cluster 0: Device Client" in cluster_notes[0].read_text()
+
+
+def test_canvas_qualified_cpp_names_stay_readable():
+    extraction = {
+        "nodes": [
+            {
+                "id": "client",
+                "label": "acme::devices::DeviceClientId",
+                "file_type": "code",
+                "source_file": "client.h",
+                "source_location": "L3",
+            }
+        ],
+        "edges": [],
+    }
+    G = build_from_json(extraction)
+    communities = {0: ["client"]}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.canvas"
+        to_canvas(G, communities, str(out), community_labels={0: "Device Client"})
+        data = json.loads(out.read_text())
+        assert any(
+            n.get("type") == "file" and n.get("file") == "acme - devices - DeviceClientId.md"
+            for n in data["nodes"]
+        )
+        assert any(
+            n.get("type") == "group" and n.get("label") == "Graph Cluster 0: Device Client"
+            for n in data["nodes"]
+        )
+
+
+def test_obsidian_cluster_notes_do_not_collide_on_duplicate_labels():
+    extraction = {
+        "nodes": [
+            {"id": "a", "label": "A", "file_type": "code", "source_file": "a.py"},
+            {"id": "b", "label": "B", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [],
+    }
+    G = build_from_json(extraction)
+    communities = {3: ["a"], 7: ["b"]}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp)
+        to_obsidian(G, communities, str(vault), community_labels={3: "Duplicate", 7: "Duplicate"})
+
+        assert (vault / "_GRAPH_CLUSTER_3_Duplicate.md").exists()
+        assert (vault / "_GRAPH_CLUSTER_7_Duplicate.md").exists()

@@ -394,9 +394,7 @@ def _get_cpp_func_name(node, source: bytes) -> str | None:
     if node.type == "identifier":
         return _read_text(node, source)
     if node.type == "qualified_identifier":
-        name_node = node.child_by_field_name("name")
-        if name_node:
-            return _read_text(name_node, source)
+        return _read_text(node, source)
     decl = node.child_by_field_name("declarator")
     if decl:
         return _get_cpp_func_name(decl, source)
@@ -553,6 +551,51 @@ _CPP_CONFIG = LanguageConfig(
     import_handler=_import_c,
     resolve_function_name_fn=_get_cpp_func_name,
 )
+
+
+def _cpp_namespace_name(node, source: bytes) -> str | None:
+    """Return a C++ namespace_definition name, including C++17 nested namespace syntax."""
+    name_node = node.child_by_field_name("name")
+    if name_node is not None:
+        return _read_text(name_node, source)
+    names = [
+        _read_text(child, source)
+        for child in node.children
+        if child.type in ("namespace_identifier", "identifier")
+    ]
+    return "::".join(names) if names else None
+
+
+def _cpp_apply_namespace(name: str, namespace_parts: tuple[str, ...]) -> str:
+    """Prefix a C++ name with the current namespace unless it is already qualified that way."""
+    clean_name = name.lstrip(":")
+    if not namespace_parts:
+        return clean_name
+    namespace = "::".join(namespace_parts)
+    if clean_name == namespace or clean_name.startswith(f"{namespace}::"):
+        return clean_name
+    return f"{namespace}::{clean_name}"
+
+
+def _looks_like_cpp_header(path: Path) -> bool:
+    """Heuristically distinguish C++ .h headers from C .h headers."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    cpp_markers = (
+        "namespace ",
+        "class ",
+        "template",
+        "::",
+        "std::",
+        "public:",
+        "private:",
+        "protected:",
+        "constexpr",
+        "using ",
+    )
+    return any(marker in text for marker in cpp_markers)
 
 _RUBY_CONFIG = LanguageConfig(
     ts_module="tree_sitter_ruby",
@@ -763,13 +806,35 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
-    def walk(node, parent_class_nid: str | None = None) -> None:
+    def walk(
+        node,
+        parent_class_nid: str | None = None,
+        namespace_parts: tuple[str, ...] = (),
+    ) -> None:
         t = node.type
 
         # Import types
         if t in config.import_types:
             if config.import_handler:
                 config.import_handler(node, source, file_nid, stem, edges, str_path)
+            return
+
+        # C++ namespaces are containers, not graph nodes. Preserve the namespace
+        # stack so nested class/function identities remain distinct.
+        if config.ts_module == "tree_sitter_cpp" and t == "namespace_definition":
+            namespace_name = _cpp_namespace_name(node, source)
+            next_namespace_parts = namespace_parts
+            if namespace_name:
+                next_namespace_parts = (*namespace_parts, *namespace_name.split("::"))
+            body = _find_body(node, config)
+            if body is None:
+                for child in node.children:
+                    if child.type == "declaration_list":
+                        body = child
+                        break
+            if body:
+                for child in body.children:
+                    walk(child, parent_class_nid=parent_class_nid, namespace_parts=next_namespace_parts)
             return
 
         # Class types
@@ -784,9 +849,12 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
             if not name_node:
                 return
             class_name = _read_text(name_node, source)
-            class_nid = _make_id(stem, class_name)
+            class_label = class_name
+            if config.ts_module == "tree_sitter_cpp" and namespace_parts:
+                class_label = _cpp_apply_namespace(class_name, namespace_parts)
+            class_nid = _make_id(stem, class_label)
             line = node.start_point[0] + 1
-            add_node(class_nid, class_name, line)
+            add_node(class_nid, class_label, line)
             add_edge(file_nid, class_nid, "contains", line)
 
             # Python-specific: inheritance
@@ -903,7 +971,7 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
             body = _find_body(node, config)
             if body:
                 for child in body.children:
-                    walk(child, parent_class_nid=class_nid)
+                    walk(child, parent_class_nid=class_nid, namespace_parts=namespace_parts)
             return
 
         # Event listener property arrays: $listen = [Event::class => [Listener::class]]
@@ -988,8 +1056,11 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                 add_node(func_nid, f".{func_name}()", line)
                 add_edge(parent_class_nid, func_nid, "method", line)
             else:
-                func_nid = _make_id(stem, func_name)
-                add_node(func_nid, f"{func_name}()", line)
+                func_label = func_name
+                if config.ts_module == "tree_sitter_cpp" and namespace_parts:
+                    func_label = _cpp_apply_namespace(func_name, namespace_parts)
+                func_nid = _make_id(stem, func_label)
+                add_node(func_nid, f"{func_label}()", line)
                 add_edge(file_nid, func_nid, "contains", line)
 
             body = _find_body(node, config)
@@ -1018,7 +1089,7 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
 
         # Default: recurse
         for child in node.children:
-            walk(child, parent_class_nid=None)
+            walk(child, parent_class_nid=None, namespace_parts=namespace_parts)
 
     walk(root)
 
@@ -3464,7 +3535,6 @@ def extract(paths: list[Path], cache_root: Path | None = None) -> dict:
         ".rs": extract_rust,
         ".java": extract_java,
         ".c": extract_c,
-        ".h": extract_c,
         ".cpp": extract_cpp,
         ".cc": extract_cpp,
         ".cxx": extract_cpp,
@@ -3501,6 +3571,8 @@ def extract(paths: list[Path], cache_root: Path | None = None) -> dict:
         # .blade.php must be checked before suffix lookup since Path.suffix returns .php
         if path.name.endswith(".blade.php"):
             extractor = extract_blade
+        elif path.suffix == ".h":
+            extractor = extract_cpp if _looks_like_cpp_header(path) else extract_c
         else:
             extractor = _DISPATCH.get(path.suffix)
         if extractor is None:
