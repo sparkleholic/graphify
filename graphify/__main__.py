@@ -1552,10 +1552,14 @@ def main() -> None:
 
     elif cmd == "update":
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
+        obsidian = False
         argv = list(sys.argv)
         if "--force" in argv[2:]:
             force = True
             argv = [a for a in argv if a != "--force"]
+        if "--obsidian" in argv[2:]:
+            obsidian = True
+            argv = [a for a in argv if a != "--obsidian"]
         if len(argv) > 2:
             watch_path = Path(argv[2])
         else:
@@ -1570,7 +1574,7 @@ def main() -> None:
             sys.exit(1)
         from graphify.watch import _rebuild_code
         print(f"Re-extracting code files in {watch_path} (no LLM needed)...")
-        ok = _rebuild_code(watch_path, force=force)
+        ok = _rebuild_code(watch_path, force=force, obsidian=obsidian)
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
             if not os.environ.get("MOONSHOT_API_KEY") and not os.environ.get("GRAPHIFY_NO_TIPS"):

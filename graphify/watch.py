@@ -46,7 +46,7 @@ def _relativize_source_files(payload: dict, root: Path) -> None:
                 continue
 
 
-def _rebuild_code(watch_path: Path, *, follow_symlinks: bool = False, force: bool = False) -> bool:
+def _rebuild_code(watch_path: Path, *, follow_symlinks: bool = False, force: bool = False, obsidian: bool = False) -> bool:
     """Re-run AST extraction + build + cluster + report for code files. No LLM needed.
 
     When ``force`` is True the node-count safety check in ``to_json`` is bypassed
@@ -159,6 +159,16 @@ def _rebuild_code(watch_path: Path, *, follow_symlinks: bool = False, force: boo
             if stale.exists():
                 stale.unlink()
 
+        if obsidian:
+            try:
+                from graphify.export import to_obsidian, to_canvas
+                obsidian_dir = out / "obsidian"
+                to_obsidian(G, communities, str(obsidian_dir), community_labels=labels or None, cohesion=cohesion)
+                to_canvas(G, communities, str(obsidian_dir / "graph.canvas"), community_labels=labels or None)
+                print(f"[graphify watch] Obsidian vault updated in {obsidian_dir}")
+            except Exception as obs_err:
+                print(f"[graphify watch] Failed to update Obsidian vault: {obs_err}")
+
         # clear stale needs_update flag if present
         flag = out / "needs_update"
         if flag.exists():
@@ -265,7 +275,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 has_non_code = _has_non_code(batch)
                 has_code = any(p.suffix.lower() in _CODE_EXTENSIONS for p in batch)
                 if has_code:
-                    _rebuild_code(watch_path)
+                    _rebuild_code(watch_path, obsidian=True)
                 if has_non_code:
                     _notify_only(watch_path)
     except KeyboardInterrupt:
