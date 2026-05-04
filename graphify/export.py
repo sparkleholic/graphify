@@ -659,13 +659,23 @@ def to_obsidian(
             lines.append(f"  - {tag}")
         lines += ["---", "", f"# {label}", ""]
 
-        # Outgoing edges as wikilinks
-        neighbors = list(G.neighbors(node_id))
-        if neighbors:
-            lines.append("## Connections")
-            for neighbor in sorted(neighbors, key=lambda n: G.nodes[n].get("label", n)):
-                edge_data = G.edges[node_id, neighbor]
-                neighbor_label = node_filename[neighbor]
+        # Outgoing edges as wikilinks. We only list edges where current node_id is the source (_src),
+        # ensuring the .md vault is directional. Obsidian's native Backlinks sidebar will
+        # automatically catch the incoming edges (where this node is _tgt).
+        outbound = []
+        for u, v, edata in G.edges(node_id, data=True):
+            # In our build.py, we stash the original direction in _src/_tgt.
+            # If those aren't present (rare), we fall back to u (which is always node_id here).
+            true_src = edata.get("_src", u)
+            true_tgt = edata.get("_tgt", v) if true_src == u else u
+            
+            if true_src == node_id:
+                outbound.append((true_tgt, edata))
+        
+        if outbound:
+            lines.append("## Connections (Outgoing)")
+            for target_id, edge_data in sorted(outbound, key=lambda x: G.nodes[x[0]].get("label", x[0])):
+                neighbor_label = node_filename[target_id]
                 relation = edge_data.get("relation", "")
                 confidence = edge_data.get("confidence", "EXTRACTED")
                 lines.append(f"- [[{neighbor_label}]] - `{relation}` [{confidence}]")
