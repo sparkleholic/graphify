@@ -4052,11 +4052,39 @@ _DISPATCH: dict[str, Any] = {
 }
 
 
+def _looks_like_cpp(path: Path) -> bool:
+    """Heuristic to check if a .h file contains C++ specific constructs."""
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as f:
+            content = f.read(8192)
+            cpp_markers = [
+                r"\bclass\s+\w+",
+                r"\btemplate\s*<",
+                r"\bnamespace\s+\w+",
+                r"\bpublic\s*:",
+                r"\bprivate\s*:",
+                r"\bprotected\s*:",
+                r"\busing\s+namespace\b",
+                r"\bvirtual\b",
+                r"\bnullptr\b",
+                r"\bstd::",
+                r"\btypename\b",
+            ]
+            return any(re.search(marker, content) for marker in cpp_markers)
+    except Exception:
+        return False
+
+
 def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
     if path.name.endswith(".blade.php"):
         return extract_blade
-    return _DISPATCH.get(path.suffix)
+
+    ext = path.suffix.lower()
+    if ext == ".h":
+        return extract_cpp if _looks_like_cpp(path) else extract_c
+
+    return _DISPATCH.get(ext)
 
 
 def _extract_single_file(args: tuple) -> tuple[int, dict]:
